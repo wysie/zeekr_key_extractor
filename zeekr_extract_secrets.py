@@ -48,12 +48,14 @@ except ImportError:
 # ============================================================================
 
 # Region indices in the pointer tables (4 regions per environment group)
-REGION_INDICES = {"CN": 0, "SEA": 1, "EU": 2, "EM": 3}
+REGION_INDICES = {"CN": 0, "SEA": 1, "EU": 3, "EM": 3}
 REGIONS_PER_ENV = 4
 
-# The PROD environment is at group index 1 in the pointer tables
-# Table order: DEV=0, PROD=1, UAT=2, SIT=3, PREPROD=4, ...
+# The PROD environment group index in the pointer tables.
+# Most regions: PROD=1 (table order: DEV=0, PROD=1, UAT=2, SIT=3, ...)
+# EU is different: PROD=0
 PROD_ENV_GROUP = 1
+PROD_ENV_GROUP_EU = 0
 
 # Known non-secret 16-char hex strings to filter out
 TRIVIAL_HEX16 = {
@@ -269,7 +271,8 @@ class NativeLibAnalyzer:
         alnum40 = re.compile(r"^[0-9a-z]{40}$")
 
         region_idx = REGION_INDICES.get(region, 3)
-        target_idx = PROD_ENV_GROUP * REGIONS_PER_ENV + region_idx  # = 7
+        env_group = PROD_ENV_GROUP_EU if region == "EU" else PROD_ENV_GROUP
+        target_idx = env_group * REGIONS_PER_ENV + region_idx
 
         # Collect relocations pointing to matching strings
         appid_entries = []
