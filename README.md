@@ -35,10 +35,20 @@ pip install capstone pyelftools
 
 ### Step 1: Pull the APK files from your device
 
-Connect your Android device via USB (with USB debugging enabled) and run:
+Connect your Android device via USB (with USB debugging enabled) and run the appropriate command for your market:
 
+> **Note on package names:** The Zeekr app uses different package names depending on your market:
+> - **Most markets** (Singapore, Australia, SEA, EM): `com.zeekr.global`
+> - **EU market** (confirmed in Netherlands and other EU countries): `com.zeekr.overseas`
+
+**For most markets:**
 ```bash
 adb shell pm path com.zeekr.global
+```
+
+**For EU market:**
+```bash
+adb shell pm path com.zeekr.overseas
 ```
 
 This will output something like:
