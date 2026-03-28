@@ -586,7 +586,7 @@ def extract_secrets(base_apk: str, arm64_apk: str = None, region: str = "EM"):
     for key, value in secrets.items():
         status = "[OK]" if value else "[MISSING]"
         if value:
-            display = value if len(value) <= 60 else f"{value[:40]}...{value[-20:]}"
+            display = value
         else:
             display = "NOT FOUND"
             all_found = False
