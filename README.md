@@ -173,6 +173,7 @@ The extractor uses two techniques to find the secrets:
 | App | Version | Status |
 |---|---|---|
 | Zeekr (com.zeekr.global) | 1.5.3 | All 6 secrets extracted successfully |
+| Zeekr EU (com.zeekr.overseas) | 2.9.9 | All 6 secrets extracted successfully (use `--region EU`) |
 
 If you have tested with a different version, please open an issue or PR to update this table.
 
