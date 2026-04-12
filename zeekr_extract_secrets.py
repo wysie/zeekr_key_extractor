@@ -378,39 +378,37 @@ def find_rsa_public_key(dex_files: list) -> str | None:
     return None
 
 
-def find_prod_secret(dex_files: list) -> str | None:
-    """Find the prod secret for X-SIGNATURE HMAC computation.
+def find_prod_secret(dex_files: list) -> list:
+    """Find all prod secret candidates for X-SIGNATURE HMAC computation.
 
-    The prod secret is a 32-char lowercase hex string stored as a DEX string
-    constant. We search for it with ULEB128 length prefix (0x20) and null
-    terminator, then pick the most common candidate.
+    Returns a list of unique 32-char hex strings found across all DEX files,
+    with candidates from DEX files containing 'X-SIGNATURE' listed first.
+    Multiple values may be present across app versions — all are returned so
+    users can try each one if needed.
     """
-    candidates = []
+    pattern = re.compile(rb"\x20([0-9a-f]{32})\x00")
+    sig_candidates = []   # from DEX files containing X-SIGNATURE
+    other_candidates = [] # from all other DEX files
+
     for dex_path in dex_files:
         try:
             with open(dex_path, "rb") as f:
                 data = f.read()
-
-            pattern = re.compile(rb"\x20([0-9a-f]{32})\x00")
+            has_sig = b"X-SIGNATURE" in data
             for match in pattern.finditer(data):
                 val = match.group(1).decode("ascii")
-                candidates.append((os.path.basename(dex_path), val))
+                if has_sig:
+                    if val not in sig_candidates:
+                        sig_candidates.append(val)
+                else:
+                    if val not in other_candidates:
+                        other_candidates.append(val)
         except Exception:
             continue
 
-    if not candidates:
-        return None
-
-    unique_vals = list(set(v for _, v in candidates))
-    if len(unique_vals) == 1:
-        return unique_vals[0]
-
-    # Multiple candidates: prefer the one appearing in multiple DEX files
-    val_counts = {}
-    for _, v in candidates:
-        val_counts[v] = val_counts.get(v, 0) + 1
-
-    return max(val_counts, key=val_counts.get)
+    # Return sig candidates first (most likely correct), then others
+    all_candidates = sig_candidates + [v for v in other_candidates if v not in sig_candidates]
+    return all_candidates
 
 
 def find_vin_keys(dex_files: list) -> tuple:
@@ -479,6 +477,7 @@ def extract_secrets(base_apk: str, arm64_apk: str = None, region: str = "EM"):
         "hmac_secret_key": None,
         "password_public_key": None,
         "prod_secret": None,
+        "prod_secret_candidates": [],
         "vin_key": None,
         "vin_iv": None,
     }
@@ -515,10 +514,16 @@ def extract_secrets(base_apk: str, arm64_apk: str = None, region: str = "EM"):
             print("      [!!] Password Public Key: NOT FOUND")
 
         print("      Looking for prod secret...")
-        prod = find_prod_secret(dex_files)
-        if prod:
-            secrets["prod_secret"] = prod
-            print(f"      [OK] Prod Secret: {prod}")
+        prod_candidates = find_prod_secret(dex_files)
+        if prod_candidates:
+            secrets["prod_secret"] = prod_candidates[0]
+            secrets["prod_secret_candidates"] = prod_candidates
+            if len(prod_candidates) == 1:
+                print(f"      [OK] Prod Secret: {prod_candidates[0]}")
+            else:
+                print(f"      [OK] Prod Secret: {prod_candidates[0]} (primary)")
+                for i, c in enumerate(prod_candidates[1:], 2):
+                    print(f"      [OK] Prod Secret candidate {i}: {c}")
         else:
             print("      [!!] Prod Secret: NOT FOUND")
 
@@ -584,6 +589,8 @@ def extract_secrets(base_apk: str, arm64_apk: str = None, region: str = "EM"):
 
     all_found = True
     for key, value in secrets.items():
+        if key == "prod_secret_candidates":
+            continue  # printed separately below
         status = "[OK]" if value else "[MISSING]"
         if value:
             display = value
@@ -591,6 +598,13 @@ def extract_secrets(base_apk: str, arm64_apk: str = None, region: str = "EM"):
             display = "NOT FOUND"
             all_found = False
         print(f"  {status} {key}: {display}")
+    # Print all prod_secret candidates if more than one
+    candidates = secrets.get("prod_secret_candidates", [])
+    if len(candidates) > 1:
+        print(f"\n  NOTE: Multiple prod_secret candidates found. If the primary")
+        print(f"  value does not work, try the others:")
+        for i, c in enumerate(candidates, 1):
+            print(f"    {i}. {c}")
 
     if all_found:
         print(f"\n  All 6 secrets extracted successfully!")
