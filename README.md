@@ -125,7 +125,7 @@ The script will print all 6 secrets and save them to a `zeekr_secrets.json` file
 2. Add the integration in Home Assistant (Settings > Devices & Services > Add Integration > Zeekr).
 3. Enter your Zeekr account credentials and the 6 extracted secrets when prompted.
 
-> **Tip:** Create a dedicated Zeekr account and share your car with it to avoid session conflicts with the phone app.
+> **Tip:** Create a dedicated Zeekr account and share your car with it to avoid session conflicts with the phone app. Signing in with the integration while the same account is live in the phone app can surface as error `079021`.
 
 ### With the Python API Library
 
@@ -175,8 +175,11 @@ The extractor uses two techniques to find the secrets:
 | Zeekr (com.zeekr.global) | 1.5.3 | All 6 secrets extracted successfully |
 | Zeekr (com.zeekr.global) | 1.5.5 | All 6 secrets extracted successfully |
 | Zeekr EU (com.zeekr.overseas) | 2.9.9 | All 6 secrets extracted successfully (use `--region EU`) |
+| Zeekr EU (com.zeekr.overseas) | 3.0.3 | All 6 secrets extracted successfully (use `--region EU`) |
 
 > **Note:** The `prod_secret` changed between v1.5.3 and v1.5.5. Always extract secrets from the same app version you are running — do not mix secrets from different versions.
+>
+> On `com.zeekr.overseas` 3.0.3 the DEX scan surfaces several `prod_secret` candidates. If login fails with the first, try each of the other listed candidates.
 
 If you have tested with a different version, please open an issue or PR to update this table.
 
