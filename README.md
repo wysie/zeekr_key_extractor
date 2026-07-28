@@ -6,18 +6,20 @@ Extract the 6 secret values required by the [Zeekr Home Assistant integration](h
 
 The Zeekr Home Assistant integration requires several secret values that are embedded in the Zeekr Android app. These values are used for API request signing, password encryption, and VIN encryption. Extracting them manually involves decompiling the APK with JADX and Ghidra, which can be a time-consuming process.
 
-This tool automates the entire extraction process. It decompiles the DEX bytecode to find Java-level secrets and performs OLLVM deobfuscation on the native ARM64 libraries to decrypt the HMAC keys.
+This tool automates the entire extraction process. It decompiles the DEX bytecode to find Java-level secrets and analyzes the native ARM64 libraries to recover the HMAC keys (OLLVM deobfuscation on app <= 1.5.5, plaintext table resolution on app >= 1.5.7).
+
+> **Important for app >= 1.5.7:** Zeekr moved the VIN key/IV behind iWall ECIES encryption (`fi.a` / `SecuritySuiteSDK`, decrypted at runtime by `libiwallca.so`), so these two values can no longer be extracted statically. The extractor recovers the other 4 secrets (including the HMAC keys, which moved to a new plaintext table format in 1.6.0) and prints guidance for the VIN key/IV — see [VIN key/IV on app >= 1.5.7](#vin-keyiv-on-app--157). VIN key/IV extracted from a **v1.5.5 APK are still accepted by the Zeekr API**, so the simplest path is to run this tool on a 1.5.5 APK for those two values.
 
 ## Extracted Secrets
 
 | Secret | Description | Source |
 |---|---|---|
-| HMAC Access Key | Used in `X-HMAC-ACCESS-KEY` header for API request signing | `libenv.so` (OLLVM-encrypted) |
-| HMAC Secret Key | Used for HMAC-SHA256 signature computation | `libenv.so` (OLLVM-encrypted) |
+| HMAC Access Key | Used in `X-HMAC-ACCESS-KEY` header for API request signing | `libenv.so` (OLLVM <= 1.5.5, plaintext tables >= 1.5.7) |
+| HMAC Secret Key | Used for HMAC-SHA256 signature computation | `libenv.so` (OLLVM <= 1.5.5, plaintext tables >= 1.5.7) |
 | Password Public Key | RSA public key for encrypting the login password | DEX string table |
 | Prod Secret | Used for `X-SIGNATURE` HMAC computation | DEX string table |
-| VIN Key | AES-128-CBC key for encrypting the VIN in `X-VIN` header | DEX string table |
-| VIN IV | AES-128-CBC initialization vector for VIN encryption | DEX string table |
+| VIN Key | AES-128-CBC key for encrypting the VIN in `X-VIN` header | DEX string table (app <= 1.5.5 only) |
+| VIN IV | AES-128-CBC initialization vector for VIN encryption | DEX string table (app <= 1.5.5 only) |
 
 ## Requirements
 
@@ -67,6 +69,16 @@ adb pull <path_to_arm64_v8a.apk> zeekr_arm64.apk
 ```
 
 The `split_config.xxhdpi.apk` is not needed (it only contains density-specific resources).
+
+> **Using app >= 1.5.7? Read this first.** In v1.5.7 Zeekr moved the VIN key/IV behind iWall ECIES white-box encryption, which means **no static tool can extract them from a newer APK** — the EC private key that decrypts them only exists inside `libiwallca.so` at runtime. The recommended workflow is therefore:
+>
+> 1. Pull the **current** APK from your device and run this tool on it → you get the HMAC keys, RSA public key, and prod secret (these must match the app version you actually run).
+> 2. Download **v1.5.5** of `com.zeekr.global` from an APK mirror (e.g. APKPure) and run this tool on it → you get the VIN key/IV.
+> 3. Merge the two `zeekr_secrets.json` outputs (take `vin_key` + `vin_iv` from the 1.5.5 result).
+>
+> This works because Zeekr only changed **how the app stores** the VIN key/IV — the values themselves were **not rotated server-side**, and the API still accepts VIN headers encrypted with the 1.5.5 key/IV (confirmed against the live API). This is the only secret pair that may be mixed across app versions; all others must come from the version you run.
+>
+> **Shortcut:** since v1.5.5 still stores *everything* in plaintext, you can technically run this tool on a 1.5.5 APK alone and get all 6 secrets in one go — and those values have been confirmed working against the live API. Just be aware that Zeekr rotates some secrets between app versions (`prod_secret` changed between 1.5.3 and 1.5.5, and the HMAC keys may change too), so if an all-1.5.5 set ever stops working, re-extract the version-sensitive secrets (HMAC keys, prod secret) from the current APK and keep only the VIN key/IV from 1.5.5.
 
 ### Step 2: Run the extractor
 
@@ -154,19 +166,41 @@ print(client.get_vehicle_list())
 
 ## How It Works
 
-The extractor uses two techniques to find the secrets:
+The extractor uses these techniques to find the secrets:
 
 1. **DEX string table scanning** — The base APK contains multiple DEX files (Dalvik bytecode). The script searches for specific byte patterns in the DEX string tables:
    - RSA public keys (base64-encoded, starting with `MIGfMA0GCSq`)
    - 32-character hex strings with ULEB128 length prefix (prod secret)
-   - 16-character hex string pairs in DEX files containing `AES/CBC/PKCS5Padding` (VIN key and IV)
+   - 16-character hex string pairs in DEX files containing `AES/CBC/PKCS5Padding` (VIN key and IV, app <= 1.5.5 only)
 
-2. **OLLVM deobfuscation of native libraries** — The HMAC keys are stored in `libenv.so`, a native ARM64 library protected with [OLLVM](https://github.com/nickcano/OLLVM) string encryption. The script:
-   - Disassembles the `.text` section using [Capstone](https://www.capstone-engine.org/)
-   - Identifies the XOR decryption function by scanning for dense `EOR` instruction regions
-   - Extracts all XOR operations (two patterns: `ldrb+mov+eor` and `ldrb+eor`)
-   - Applies the XOR operations to decrypt the strings in-place
-   - Maps the decrypted strings to the correct region/environment using the ELF relocation table
+2. **HMAC keys from `libenv.so`** — two storage generations are supported:
+   - **App <= 1.5.5 (OLLVM deobfuscation):** the keys are stored in `libenv.so` protected with [OLLVM](https://github.com/nickcano/OLLVM) string encryption. The script disassembles `.text` with [Capstone](https://www.capstone-engine.org/), finds the XOR decryption function by scanning for dense `EOR` regions, applies the XOR operations in-place, and maps the decrypted strings to regions via the ELF relocation table.
+   - **App >= 1.5.7 (plaintext table resolution):** Zeekr dropped the OLLVM layer; `libenv.so` now keeps the keys as plaintext `.rodata` strings referenced by pointer tables in `.data.rel.ro`. The JNI wrappers (`getNativeApplicationId` / `getNativeSecret` / `getNativeHost`) dispatch through a 15-row (environment) x 4-column (stage: dev/test/uat/prod) jump table. The script disassembles these helpers, resolves the pointer tables through ELF relocations, labels each row using the gateway hostnames from `getNativeHost`, and picks the production column of the row matching your `--region`.
+
+## VIN key/IV on app >= 1.5.7
+
+Starting with v1.5.7, the VIN AES key/IV are shipped as ECIES-encrypted blobs (base64 strings in the `cj.i` class maps) and are decrypted at runtime by `fi.a` through the iWall security SDK (`SecuritySuite.asymmDecrypt` in `libiwallca.so`). The EC private key lives inside the white-box SDK, so static extraction from the APK is not practical. You have two options:
+
+**Option A (easiest): take them from a v1.5.5 APK.** The VIN key/IV extracted from v1.5.5 are still accepted by the Zeekr API (confirmed against the live API). Download `com.zeekr.global` v1.5.5 (e.g. from APKPure) and run the extractor on it — combine those two values with the other four from your current APK.
+
+**Option B: hook the running app with Frida** (rooted device or emulator):
+
+```js
+// vin_hook.js — prints the VIN AES key/IV at runtime
+Java.perform(function () {
+  var A = Java.use('cj.a');
+  A.h.implementation = function (content, key, iv) {
+    console.log('VIN key: ' + key);
+    console.log('VIN IV:  ' + iv);
+    return this.h(content, key, iv);
+  };
+});
+```
+
+```bash
+frida -U -l vin_hook.js com.zeekr.global
+# then trigger any vehicle API call in the app (e.g. pull to refresh)
+```
 
 ## Tested Versions
 
@@ -175,18 +209,23 @@ The extractor uses two techniques to find the secrets:
 | Zeekr (com.zeekr.global) | 1.5.3 | All 6 secrets extracted successfully |
 | Zeekr (com.zeekr.global) | 1.5.5 | All 6 secrets extracted successfully |
 | Zeekr EU (com.zeekr.overseas) | 2.9.9 | All 6 secrets extracted successfully (use `--region EU`) |
+| Zeekr (com.zeekr.global) | 1.6.0 | 4 of 6 (HMAC + RSA + prod_secret). VIN key/IV: use v1.5.5 APK or Frida — see above |
 
-> **Note:** The `prod_secret` changed between v1.5.3 and v1.5.5. Always extract secrets from the same app version you are running — do not mix secrets from different versions.
+> **Note:** The `prod_secret` changed between v1.5.3 and v1.5.5. Always extract secrets from the same app version you are running — do not mix secrets from different versions. (Exception: the VIN key/IV from v1.5.5 remain valid for newer app versions, see above.)
+
+> **Tip:** if login succeeds but API calls fail signature validation, try the other `prod_secret` candidates listed in the output — for some regions the working value is not the first candidate.
 
 If you have tested with a different version, please open an issue or PR to update this table.
 
 ## Troubleshooting
 
-**"HMAC Access Key: NOT FOUND"** — The script will print a list of candidate values. The OLLVM encryption pattern may have changed in a newer APK version. Try the candidates manually, or use JADX + Ghidra for manual inspection.
+**"HMAC Access Key: NOT FOUND"** — On app >= 1.5.7 the script prints the available environment rows with their production gateway hosts; pick the row matching your market and check your `--region` flag. On older apps it prints OLLVM candidate values instead. If the layout changed again in a newer APK, please open an issue.
+
+**"VIN Key/IV: NOT FOUND" on app >= 1.5.7** — Expected: these moved behind iWall ECIES and cannot be extracted statically. See [VIN key/IV on app >= 1.5.7](#vin-keyiv-on-app--157).
 
 **"libenv.so not found"** — Make sure you provide the ARM64 split APK (`split_config.arm64_v8a.apk`) as the second argument. The native libraries are in this file, not in the base APK.
 
-**Login fails with the extracted keys** — Try a different `--region` flag. The HMAC keys are region-specific and must match the API gateway your account connects to.
+**Login fails with the extracted keys** — Try a different `--region` flag. The HMAC keys are region-specific and must match the API gateway your account connects to. Also try the other `prod_secret` candidates from the output.
 
 **APK version changes** — Zeekr may update the app and change how secrets are stored. If the script stops working after an app update, please open an issue.
 
