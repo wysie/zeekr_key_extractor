@@ -230,8 +230,8 @@ getters, with a blob-decrypt fallback (`yn.a`) if a newer build moves them.
 `X-APP-ID` `ZEEKRCNCH001M0001` is still correct for EU (the app picks it by brand,
 not region).
 
-A full end-to-end Home Assistant walkthrough (both static and runtime keys, the
-`use_local_api` signing fix, and troubleshooting) is here:
+A full end-to-end Home Assistant walkthrough (both the static and runtime keys,
+plus troubleshooting) is here:
 https://github.com/mescon/zeekr-7x-home-assistant
 
 ## Tested Versions
