@@ -202,6 +202,38 @@ frida -U -l vin_hook.js com.zeekr.global
 # then trigger any vehicle API call in the app (e.g. pull to refresh)
 ```
 
+## App 3.x (EU 7X)
+
+On the newer EU builds (confirmed on `com.zeekr.overseas` **v3.0.6**, Zeekr 7X, EU
+gateway `eu-snc-tsp-api-gw.zeekrlife.com`) two things change beyond the 1.5.7 notes
+above:
+
+1. **`prod_secret` is runtime-only now, too.** It moved behind the same iWall ECIES
+   layer as the VIN key/IV, so the DEX `prod_secret` candidates this tool prints
+   **do not work** on 3.0.x — every candidate fails `_bearer_login` with
+   `079025 "Signature authentication failed"`. It must be dumped at runtime.
+2. **The v1.5.5 VIN-key shortcut (Option A above) does *not* hold on 3.0.x EU.**
+   The old `vin_key`/`vin_iv` give `079025 "Decrypt X-VIN failed"` at the
+   vehicle-status call — you need the real runtime values.
+
+So on 3.0.x you dump **all three** runtime secrets. The classes differ from the
+1.6.0 `vin_hook.js` above (they're `com.zeekr.snc.log.m` / `yn.a`), so use
+[`frida/zeekr_runtime_keys_3x.js`](frida/zeekr_runtime_keys_3x.js):
+
+```bash
+# frida-server 16.x on the device (17 removed the Java bridge); LOG IN first
+frida -U -n ZEEKR -l frida/zeekr_runtime_keys_3x.js
+```
+
+It reads the decrypted `prod_secret` / `vin_key` / `vin_iv` straight from the app's
+getters, with a blob-decrypt fallback (`yn.a`) if a newer build moves them.
+`X-APP-ID` `ZEEKRCNCH001M0001` is still correct for EU (the app picks it by brand,
+not region).
+
+A full end-to-end Home Assistant walkthrough (both static and runtime keys, the
+`use_local_api` signing fix, and troubleshooting) is here:
+https://github.com/mescon/zeekr-7x-home-assistant
+
 ## Tested Versions
 
 | App | Version | Status |
@@ -210,6 +242,7 @@ frida -U -l vin_hook.js com.zeekr.global
 | Zeekr (com.zeekr.global) | 1.5.5 | All 6 secrets extracted successfully |
 | Zeekr EU (com.zeekr.overseas) | 2.9.9 | All 6 secrets extracted successfully (use `--region EU`) |
 | Zeekr (com.zeekr.global) | 1.6.0 | 4 of 6 (HMAC + RSA + prod_secret). VIN key/IV: use v1.5.5 APK or Frida — see above |
+| Zeekr EU (com.zeekr.overseas) | 3.0.6 | HMAC + RSA static; **`prod_secret` + VIN key/IV are runtime-only** (iWall) — see [App 3.x](#app-3x-eu-7x) |
 
 > **Note:** The `prod_secret` changed between v1.5.3 and v1.5.5. Always extract secrets from the same app version you are running — do not mix secrets from different versions. (Exception: the VIN key/IV from v1.5.5 remain valid for newer app versions, see above.)
 
