@@ -1,62 +1,95 @@
 // zeekr_runtime_keys_3x.js
 //
-// Dump prod_secret + vin_key + vin_iv from com.zeekr.overseas v3.0.x (EU 7X) at
-// runtime. On app >= 3.0 the prod_secret ALSO moved behind iWall ECIES (like the
-// VIN key/iv on >= 1.5.7), so the static DEX prod_secret candidates no longer
-// work — everything has to be dumped live.
+// Dump prod_secret + vin_key + vin_iv from com.zeekr.overseas v3.0.6 (EU 7X) at
+// runtime. This build stores all three behind iWall ECIES. Older EU builds may
+// differ; the class/method names below are confirmed only for v3.0.6.
 //
-// Prereqs: frida-server 16.x on the device (NOT 17 — it removed the Java bridge),
-// the app installed and *** LOGGED IN once *** (the iWall SDK only initialises on
-// the first signed request; before that the values aren't in memory).
+// Prereqs: a rooted device/emulator, matching Frida client/server versions,
+// and the app running and logged in. With Frida 17, use frida-tools >= 14,
+// which supplies the Java bridge for CLI scripts. Sign in and refresh the
+// vehicle page before attaching so the security SDK has initialised.
 //
 //   frida -U -n ZEEKR -l frida/zeekr_runtime_keys_3x.js
 //   (the process shows up to frida as "ZEEKR", not the package name)
 //
-// Class/method names are for v3.0.6. If a newer build moves them, use the blob
-// fallback (paste the base64 blobs from xn/a.java) or re-locate the signer.
+// If a newer build moves the getter class, configure encryptedBlobs below
+// using the base64 constants from your own APK (xn/a.java on v3.0.6).
+// The fallback still requires the yn.a decryptor and EnvType names to match.
 
-Java.perform(function () {
-  function real(v) { return v !== null && v !== undefined && ('' + v).length >= 8; }
-  var out = { _method: null };
+(function () {
+  if (typeof Java === 'undefined') {
+    console.log('Java bridge unavailable. Use the frida CLI with frida-tools >= 14 for Frida 17, or bundle frida-java-bridge in a custom agent.');
+    return;
+  }
 
-  // Method A: read the already-decrypted values straight from the getters.
-  try {
-    var M = Java.use('com.zeekr.snc.log.m');   // holds the decrypted signing/VIN secrets
-    var inst = M.a.value;                       // static instance
-    if (inst !== null) {
-      out.prod_secret = '' + inst.k();          // X-SIGNATURE HMAC key (32 hex)
-      out.vin_key     = '' + inst.j();          // X-VIN AES key (16 chars)
-      out.vin_iv      = '' + inst.c();          // X-VIN AES iv  (16 chars)
-      if (real(out.prod_secret)) out._method = 'getters';
+  Java.perform(function () {
+    // Optional manual fallback. Leave unset to use the getters only.
+    var encryptedBlobs = {
+      prod_secret: null, // xn.a.c base64 from your APK
+      vin_key: null,     // xn.a.a base64 from your APK
+      vin_iv: null,      // xn.a.l base64 from your APK
+    };
+    var getters = { prod_secret: 'k', vin_key: 'j', vin_iv: 'c' };
+    var names = Object.keys(getters);
+    var out = {};
+    var sources = {};
+    var errors = [];
+
+    function accept(name, value, method) {
+      if (value === null || value === undefined) return;
+      var text = String(value);
+      var valid = name === 'prod_secret'
+        ? /^[0-9a-fA-F]{32}$/.test(text)
+        : /^[\x20-\x7e]{16}$/.test(text) && !/[<>]/.test(text);
+      if (valid) { out[name] = text; sources[name] = method; }
     }
-  } catch (e) { out._getterError = '' + e; }
 
-  // Method B: decrypt the blobs yourself (fallback). base64 from xn/a.java.
-  if (!real(out.prod_secret)) {
+    // Read each getter independently so one failure cannot hide other values.
     try {
-      var PROD = '<xn.a.c base64 from your apk>';   // prod_secret
-      var VKEY = '<xn.a.a base64 from your apk>';   // vin_key
-      var VIV  = '<xn.a.l base64 from your apk>';   // vin_iv
-      var YA = Java.use('yn.a').$new();             // the iWall decryptor
-      var P  = Java.use('com.geely.snc.security.api.model.EnvType').PRODUCT.value;
-      out.prod_secret = '' + YA.c(P, PROD);
-      out.vin_key     = '' + YA.c(P, VKEY);
-      out.vin_iv      = '' + YA.c(P, VIV);
-      if (real(out.prod_secret)) out._method = 'blobs';
-    } catch (e) { out._blobError = '' + e; }
-  }
+      var M = Java.use('com.zeekr.snc.log.m');
+      var inst = M.a.value;
+      if (inst === null || inst === undefined) {
+        errors.push('Getter singleton is not initialised.');
+      } else {
+        names.forEach(function (name) {
+          try { accept(name, inst[getters[name]](), 'getters'); }
+          catch (e) { errors.push(name + ' getter: ' + e); }
+        });
+      }
+    } catch (e) { errors.push('getter error: ' + e); }
 
-  console.log('--- Zeekr runtime secrets (com.zeekr.overseas v3.0.x) ---');
-  console.log('prod_secret: ' + out.prod_secret);
-  console.log('vin_key:     ' + out.vin_key);
-  console.log('vin_iv:      ' + out.vin_iv);
-  console.log('method:      ' + out._method);
-  if (!real(out.prod_secret)) {
-    console.log('');
-    console.log('Empty/placeholder? Most likely you have not LOGGED IN yet — log in, then re-run.');
-    console.log('If a newer build moved the classes, use the Method B blob fallback above.');
-    if (out._getterError) console.log('getter error: ' + out._getterError);
-  }
-  console.log('');
-  console.log('Do not publish these values — they are app-global constants; everyone extracts their own.');
-});
+    // Decrypt only missing values with configured, syntactically valid base64.
+    var pending = names.filter(function (name) {
+      var blob = encryptedBlobs[name];
+      return !out[name] && typeof blob === 'string' && blob.length >= 4
+        && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(blob);
+    });
+    if (pending.length) {
+      try {
+        var YA = Java.use('yn.a').$new();
+        var P = Java.use('com.geely.snc.security.api.model.EnvType').PRODUCT.value;
+        pending.forEach(function (name) {
+          try { accept(name, YA.c(P, encryptedBlobs[name]), 'blobs'); }
+          catch (e) { errors.push(name + ' blob decrypt: ' + e); }
+        });
+      } catch (e) { errors.push('blob error: ' + e); }
+    }
+
+    console.log('--- Zeekr runtime secrets (com.zeekr.overseas v3.0.6) ---');
+    names.forEach(function (name) {
+      console.log(name + ': ' + (out[name] || 'NOT FOUND'));
+    });
+    var missing = names.filter(function (name) { return !out[name]; });
+    if (missing.length) {
+      console.log('Missing runtime values: ' + missing.join(', '));
+      console.log('Log in, refresh the vehicle page, then re-run. Class names may differ on other builds.');
+      console.log('For manual fallback, fill encryptedBlobs with the constants from your APK and verify the decryptor class names.');
+      errors.forEach(function (error) { console.log(error); });
+    } else {
+      console.log('All three runtime values extracted (format checked; API validity must be tested separately).');
+    }
+    console.log('method: ' + names.filter(function (name) { return out[name]; })
+      .map(function (name) { return name + '=' + sources[name]; }).join(', '));
+    console.log('Do not publish these values — they are app-global constants; everyone extracts their own.');
+  });
+})();
